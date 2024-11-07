@@ -16,7 +16,8 @@ from mask2former.utils.misc import is_dist_avail_and_initialized
 import random
 import cv2
 import os
-import tel
+import ent
+import keypct
 
 def unfold_wo_center(x, kernel_size, dilation):
     assert x.dim() == 4
@@ -265,7 +266,8 @@ class VideoSetCriterion(nn.Module):
         self._warmup_iters = 2000
         self.register_buffer("_iter", torch.zeros([1]))
         
-        self.TELloss = tel.TELloss()
+        self.keypctloss = keypct.KEYPCT()
+        self.entropy = ent.ENT()
         
         with open('alpha_beta.txt','r') as f:
             ab = eval(str(f.read()).replace('\n',''))
@@ -352,7 +354,7 @@ class VideoSetCriterion(nn.Module):
         images_lab_sim_mask = images_lab_sim_mask.scatter(1, indices, topk)
         return images_lab_sim_mask
 
-    def loss_masks_proj(self, outputs, targets, indices, num_masks, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2):
+    def loss_masks_proj(self, outputs, targets, indices, num_masks, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2,images):
         """Compute the losses related to the masks: the focal loss and the dice loss.
         targets dicts must contain the key "masks" containing a tensor of dim [nb_target_boxes, h, w]
         """
@@ -400,18 +402,34 @@ class VideoSetCriterion(nn.Module):
                 src_masks[:,1:2], src_masks[:,2:3], k_size, 3
             )
             
-            telloss = 0.0
-            if self.alpha>=1:
-                telloss = self.TELloss(src_masks,3)
+            #loss_keypct = torch.tensor(0.0001, dtype=tensor.dtype, device=tensor.device)
+            loss_keypct = torch.tensor(0.001, dtype=torch.float64, device='cuda:0').requires_grad_()
+            if self.beta>0:
+                #telloss = self.TELloss(src_masks,3)
+                
+                #print(' loss_forward_1,loss_forward_2,loss_backward', loss_forward_1,loss_forward_2,loss_backward)
+                
+                try:
+                    #print(asd)
+                    loss_keypct = self.keypctloss(src_masks,images.tensor,targets)
+                    #print('loss_keypct',loss_keypct)
+                    
+                    pairwise_losses_neighbor  = pairwise_losses_neighbor  + (self.beta*(loss_keypct[0]*pairwise_losses_neighbor))
+                    pairwise_losses_neighbor1 = pairwise_losses_neighbor1 + (self.beta*(loss_keypct[1]*pairwise_losses_neighbor1))
+                    pairwise_losses_neighbor2 = pairwise_losses_neighbor2 + (self.beta*(loss_keypct[2]*pairwise_losses_neighbor2))
+                       
+                except:
+                    
+                    pass
+                    #import pickle
+                    #with open('feats_tel.obj', 'wb') as fp:
+                    #    pickle.dump([src_masks.detach().cpu(),images.tensor.detach().cpu(),targets], fp)
 
-                pairwise_losses_neighbor  = pairwise_losses_neighbor  + (self.beta*(telloss[0]*pairwise_losses_neighbor))
-                pairwise_losses_neighbor1 = pairwise_losses_neighbor1 + (self.beta*(telloss[1]*pairwise_losses_neighbor1))
-                pairwise_losses_neighbor2 = pairwise_losses_neighbor2 + (self.beta*(telloss[2]*pairwise_losses_neighbor2))
+                    #print(Asd)
+                    
+                    
                 
                 #print('telloss',telloss)
-
-           
-        
        
         src_masks = src_masks.flatten(0, 1)[:, None]
         target_masks = target_masks.flatten(0, 1)[:, None]
@@ -420,9 +438,17 @@ class VideoSetCriterion(nn.Module):
         if src_masks.shape[0] > 0:
             loss_prj_term = compute_project_term(src_masks.sigmoid(), target_masks)  
             
-            pairwise_losses = compute_pairwise_term(
+            ent_term = self.entropy(outputs["pred_masks"])
+            pairwise_losses = (ent_term**self.alpha) * compute_pairwise_term(
                 src_masks, 3, 2
             )
+            
+            
+            #print('ent_term',ent_term)
+            #print('loss_prj_term',loss_prj_term)
+            #print('pairwise_losses',pairwise_losses.size())
+
+            #print(asd)
             
             weights = (images_lab_sim >= 0.3).float() * target_masks.float()
             target_masks_sum = target_masks.reshape(pairwise_losses_neighbor.shape[0], 3, target_masks.shape[-2], target_masks.shape[-1]).sum(dim=1, keepdim=True)
@@ -451,7 +477,7 @@ class VideoSetCriterion(nn.Module):
             "loss_dice": src_masks.sum() * 0.,
             "loss_bound": loss_pairwise,
             "loss_bound_neighbor": (loss_pairwise_neighbor + loss_pairwise_neighbor1 + loss_pairwise_neighbor2) * 0.1,
-            "telloss":telloss
+            "telloss":loss_keypct
         }
 
         del src_masks
@@ -470,18 +496,18 @@ class VideoSetCriterion(nn.Module):
         tgt_idx = torch.cat([tgt for (_, tgt) in indices])
         return batch_idx, tgt_idx
 
-    def get_loss(self, loss, outputs, targets, indices, num_masks, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2):
+    def get_loss(self, loss, outputs, targets, indices, num_masks, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2,images):
         loss_map = {
             'labels': self.loss_labels,
             'masks': self.loss_masks_proj,
         }
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
         if loss == 'masks':
-            return loss_map[loss](outputs, targets, indices, num_masks, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2)
+            return loss_map[loss](outputs, targets, indices, num_masks, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2,images)
         else:
             return loss_map[loss](outputs, targets, indices, num_masks)
 
-    def forward(self, outputs, targets, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2):
+    def forward(self, outputs, targets, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2,images):
         """This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -505,14 +531,14 @@ class VideoSetCriterion(nn.Module):
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_masks, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2))
+            losses.update(self.get_loss(loss, outputs, targets, indices, num_masks, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2,images))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
                 indices = self.matcher(aux_outputs, targets)
                 for loss in self.losses:
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_masks, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2)
+                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_masks, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2,images)
                     l_dict = {k + f"_{i}": v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
