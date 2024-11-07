@@ -3,7 +3,7 @@ Consistency
 
 
 <img src="pull_figure1.png">
-<img src="Dtemporal_pipeline_v2.png">
+<img src="temporal_pipeline_v2.png">
 
 
 To prepare and install and train for steps 1 and 2, you can use this [link](https://github.com/SysCV/MaskFreeVIS).
