@@ -343,25 +343,25 @@ class VideoMaskFormer(nn.Module):
            
             if not is_coco:
                 # bipartite matching-based loss
-                losses = self.criterion(outputs, targets, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2)
+                losses = self.criterion(outputs, targets, images_lab_sim, images_lab_sim_nei, images_lab_sim_nei1, images_lab_sim_nei2,images)
                 
                 
             else:
-                losses = self.criterion(outputs, targets, None, None, None, None)
+                losses = self.criterion(outputs, targets, None, None, None, None,None)
 
             ############################## QCC ##############################
             KK=[];
             for gkey in targets:
                 KK.append(gkey['labels'].size()[0])
                 
-            if self.alpha>=1:
-                qccv =self.QCC(outputs['pred_masks'],KK)
+            #if self.alpha>=1:
+                #qccv =self.QCC(outputs['pred_masks'],KK)
                 #print('qccv',qccv)
 
             for k in list(losses.keys()):
                 if k in self.criterion.weight_dict:
                     if self.alpha>=1:
-                        losses[k] *= self.criterion.weight_dict[k] * (1.0*qccv)
+                        losses[k] *= self.criterion.weight_dict[k]# * (1.0*qccv)
                     else:
                         losses[k] *= self.criterion.weight_dict[k]
                 else:
